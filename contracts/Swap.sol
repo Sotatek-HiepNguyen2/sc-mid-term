@@ -1,134 +1,139 @@
 // SPDX-License-Identifier: MIT
 // Compatible with OpenZeppelin Contracts ^5.0.0
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
-contract Swap {
-    struct SwapRequest {
-        uint256 id;
-        address sender;
-        address receiver;
-        address sourceToken;
-        address destToken;
-        uint256 sourceAmount;
-        uint256 destAmount;
-        RequestStatus status;
-    }
+contract Swap is Initializable {
+  struct SwapRequest {
+    uint256 id;
+    address sender;
+    address receiver;
+    address srcToken;
+    uint256 srcAmount;
+    address destToken;
+    uint256 destAmount;
+    RequestStatus status;
+  }
 
-    enum RequestStatus {
-        Pending,
-        Cancelled,
-        Rejected,
-        Approved
-    }
+  enum RequestStatus {
+    Pending,
+    Cancelled,
+    Rejected,
+    Approved
+  }
 
-    address public treasury;
-    address public owner;
-    uint8 public taxFee = 5;
-    uint256 private _requestId;
+  address public treasury;
+  address public owner;
+  uint8 public taxFee;
+  uint256 private _requestId;
 
-    mapping(uint256 => SwapRequest) public requests;
+  mapping(uint256 => SwapRequest) public requests;
 
-    event SwapRequestCreated(uint256 requestId);
-    event SwapRequestApproved(uint256 requestId);
-    event SwapRequestRejected(uint256 requestId);
-    event SwapRequestCancelled(uint256 requestId);
+  event SwapRequestCreated(uint256 requestId);
+  event SwapRequestApproved(uint256 requestId);
+  event SwapRequestRejected(uint256 requestId);
+  event SwapRequestCancelled(uint256 requestId);
 
-    constructor(address _owner, address _treasury) {
-        owner = _owner;
-        treasury = _treasury;
-    }
+  /// @custom:oz-upgrades-unsafe-allow constructor
+  constructor() {
+    _disableInitializers();
+  }
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not the owner");
-        _;
-    }
+  function initialize(address _treasury) public initializer {
+    owner = msg.sender;
+    treasury = _treasury;
+    taxFee = 5;
+  }
 
-    function setTaxFee(uint8 _taxFee) external onlyOwner {
-        require(_taxFee <= 100);
-        taxFee = _taxFee;
-    }
+  modifier onlyOwner() {
+    require(msg.sender == owner, "Not the owner");
+    _;
+  }
 
-    function requestSwap(
-        address _receiver,
-        address _sourceToken,
-        address _destToken,
-        uint256 _sourceAmount,
-        uint256 _destAmount
-    ) external {
-        require(_receiver != address(0));
-        require(_sourceToken != address(0));
-        require(_destToken != address(0));
+  function setTaxFee(uint8 _taxFee) external onlyOwner {
+    require(_taxFee <= 100);
+    taxFee = _taxFee;
+  }
 
-        address sender = msg.sender;
-        IERC20 sourceToken = IERC20(_sourceToken);
-        sourceToken.transferFrom(sender, address(this), _sourceAmount);
+  function requestSwap(
+    address _receiver,
+    address _srcToken,
+    uint256 _srcAmount,
+    address _destToken,
+    uint256 _destAmount
+  ) external {
+    require(_receiver != address(0), "Invalid receiver");
+    require(_srcToken != address(0), "Invalid srcToken");
+    require(_destToken != address(0), "Invalid destToken");
 
-        SwapRequest memory request = SwapRequest({
-            id: _requestId,
-            sender: sender,
-            receiver: _receiver,
-            sourceToken: _sourceToken,
-            destToken: _destToken,
-            sourceAmount: _sourceAmount,
-            destAmount: _destAmount,
-            status: RequestStatus.Pending
-        });
-        requests[_requestId] = request;
-        _requestId++;
+    address sender = msg.sender;
+    IERC20 srcToken = IERC20(_srcToken);
+    srcToken.transferFrom(sender, address(this), _srcAmount);
 
-        emit SwapRequestCreated(request.id);
-    }
+    SwapRequest memory request = SwapRequest({
+      id: ++_requestId,
+      sender: sender,
+      receiver: _receiver,
+      srcToken: _srcToken,
+      destToken: _destToken,
+      srcAmount: _srcAmount,
+      destAmount: _destAmount,
+      status: RequestStatus.Pending
+    });
+    requests[_requestId] = request;
 
-    function approveSwap(uint256 _requestId_) external {
-        SwapRequest memory request = requests[_requestId_];
+    emit SwapRequestCreated(request.id);
+  }
 
-        require(msg.sender == request.receiver, "Not the receiver");
-        require(request.status == RequestStatus.Pending);
+  function approveSwap(uint256 _requestId_) external {
+    SwapRequest memory request = requests[_requestId_];
 
-        IERC20 destToken = IERC20(request.destToken);
-        IERC20 srcToken = IERC20(request.sourceToken);
+    require(request.id != 0, "Request not found");
+    require(msg.sender == request.receiver, "Not the receiver");
+    require(request.status == RequestStatus.Pending, "Request not pending");
 
-        uint256 tokenAmountSenderWillReceive = ((100 - taxFee) *
-            request.destAmount) / 100;
-        uint256 tokenAmountReceiverWillReceive = ((100 - taxFee) *
-            request.sourceAmount) / 100;
+    IERC20 destToken = IERC20(request.destToken);
+    IERC20 srcToken = IERC20(request.srcToken);
 
-        destToken.transferFrom(msg.sender, address(this), request.destAmount);
-        destToken.transfer(request.sender, tokenAmountSenderWillReceive);
-        srcToken.transfer(msg.sender, tokenAmountReceiverWillReceive);
+    uint256 tokenAmountSenderWillReceive = ((100 - taxFee) *
+      request.destAmount) / 100;
+    uint256 tokenAmountReceiverWillReceive = ((100 - taxFee) *
+      request.srcAmount) / 100;
 
-        srcToken.transfer(treasury, (taxFee * request.sourceAmount) / 100);
-        destToken.transfer(treasury, (taxFee * request.destAmount) / 100);
+    destToken.transferFrom(msg.sender, address(this), request.destAmount);
+    destToken.transfer(request.sender, tokenAmountSenderWillReceive);
+    srcToken.transfer(msg.sender, tokenAmountReceiverWillReceive);
 
-        requests[_requestId_].status = RequestStatus.Approved;
-        emit SwapRequestApproved(_requestId_);
-    }
+    srcToken.transfer(treasury, (taxFee * request.srcAmount) / 100);
+    destToken.transfer(treasury, (taxFee * request.destAmount) / 100);
 
-    function rejectSwap(uint256 _requestId_) external {
-        SwapRequest memory request = requests[_requestId_];
+    requests[_requestId_].status = RequestStatus.Approved;
+    emit SwapRequestApproved(_requestId_);
+  }
 
-        require(msg.sender == request.receiver);
-        require(request.status == RequestStatus.Pending);
-        IERC20(request.sourceToken).transferFrom(
-            address(this),
-            request.sender,
-            request.sourceAmount
-        );
+  function rejectSwap(uint256 _requestId_) external {
+    SwapRequest memory request = requests[_requestId_];
 
-        requests[_requestId_].status = RequestStatus.Rejected;
-        emit SwapRequestRejected(_requestId_);
-    }
+    require(request.id != 0, "Request not found");
+    require(msg.sender == request.receiver, "Not the receiver");
+    require(request.status == RequestStatus.Pending, "Request not pending");
+    IERC20(request.srcToken).transfer(request.sender, request.srcAmount);
 
-    function cancelSwapRequest(uint256 _requestId_) external {
-        SwapRequest memory request = requests[_requestId_];
+    requests[_requestId_].status = RequestStatus.Rejected;
+    emit SwapRequestRejected(_requestId_);
+  }
 
-        require(msg.sender == request.sender, "Not the sender");
-        require(request.status == RequestStatus.Pending);
-        IERC20(request.sourceToken).transfer(msg.sender, request.sourceAmount);
+  function cancelSwapRequest(uint256 _requestId_) external {
+    SwapRequest memory request = requests[_requestId_];
 
-        requests[_requestId_].status = RequestStatus.Cancelled;
-        emit SwapRequestCancelled(_requestId_);
-    }
+    require(request.id != 0, "Request not found");
+    require(msg.sender == request.sender, "Not the sender");
+    require(request.status == RequestStatus.Pending, "Request not pending");
+    IERC20(request.srcToken).transfer(msg.sender, request.srcAmount);
+
+    requests[_requestId_].status = RequestStatus.Cancelled;
+    emit SwapRequestCancelled(_requestId_);
+  }
 }
